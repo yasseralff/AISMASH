@@ -69,13 +69,13 @@ class SpeechToTextView1(APIView):
                     {
                         "character": {
                             "type": "avatar",
-                            "avatar_id": "Kristin_public_3_20240108",
+                            "avatar_id": "Artur_sitting_office_front",
                             "avatar_style": "normal",
                         },
                         "voice": {
                             "type": "text",
                             "input_text": text,
-                            "voice_id": "e23c82c61d934fa2b7fbda39a2247228",
+                            "voice_id": "e5f89518d5564535885cb6d674e57173",
                         },
                     }
                 ],
