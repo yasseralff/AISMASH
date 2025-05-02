@@ -6,7 +6,7 @@ import SummaryPage from './SummaryPage';
 const QUESTIONS = [
   { id: 1, videoUrl: '/videos/q1.mp4' },
   { id: 2, videoUrl: '/videos/q2.mp4' },
-  // Add up to 10...
+
 ];
 
 export default function Interview({ sessionId }) {
