@@ -10,6 +10,8 @@ import requests
 import os
 import time
 import logging
+import threading
+import json
 from openai import OpenAI
 
 
@@ -36,20 +38,25 @@ class AudioUploadView(APIView):
             transcription.save()
 
             client = ElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
-            result = client.speech_to_text.convert(model_id="scribe_v1", file=audio_file)
+            result = client.speech_to_text.convert(
+                model_id="scribe_v1", file=audio_file
+            )
 
             transcription.transcript = result.text
             transcription.save()
 
-            return Response({
-                "id": transcription.id,
-                "transcript": transcription.transcript,
-                "created_at": transcription.created_at,
-            })
+            return Response(
+                {
+                    "id": transcription.id,
+                    "transcript": transcription.transcript,
+                    "created_at": transcription.created_at,
+                }
+            )
         except Exception as e:
             logger.error(f"Error during transcription: {e}")
-            return Response({"error": "An error occurred while processing the audio."}, status=500)
-
+            return Response(
+                {"error": "An error occurred while processing the audio."}, status=500
+            )
 
 
 class SpeechToTextView1(APIView):
@@ -127,8 +134,7 @@ class SpeechToTextView1(APIView):
             with open(full_path, "rb") as f:
                 django_file = File(f)
                 video_instance = GeneratedVideo.objects.create(
-                    video_id=filename,
-                    video_file=django_file
+                    video_id=filename, video_file=django_file
                 )
             return video_instance
         except Exception as e:
@@ -149,20 +155,25 @@ class SpeechToTextView1(APIView):
             if not video_url:
                 return Response({"error": "Video not ready or failed"}, status=500)
 
-            video_instance = self.download_and_save_video(video_url, filename=video_id, input_text=text)
+            video_instance = self.download_and_save_video(
+                video_url, filename=video_id, input_text=text
+            )
             if not video_instance:
                 return Response({"error": "Failed to save video"}, status=500)
 
-            return Response({
-                "video_id": video_instance.id,
-                "video_file": video_instance.video_file.url,
-                "created_at": video_instance.created_at,
-            })
+            return Response(
+                {
+                    "video_id": video_instance.id,
+                    "video_file": video_instance.video_file.url,
+                    "created_at": video_instance.created_at,
+                }
+            )
 
         except Exception as e:
             logger.error(f"Error during video creation process: {e}")
-            return Response({"error": "An error occurred while processing the request."}, status=500)
-
+            return Response(
+                {"error": "An error occurred while processing the request."}, status=500
+            )
 
 
 class StartInterviewSessionView(APIView):
@@ -185,51 +196,96 @@ class UploadInterviewResponseView(APIView):
         audio_file = request.FILES.get("audio")
 
         if not all([session_id, question_number, audio_file]):
-            return Response({"error": "Missing session_id, question_number, or audio file"}, status=400)
+            return Response(
+                {"error": "Missing session_id, question_number, or audio file"},
+                status=400,
+            )
 
         try:
             session = InterviewSession.objects.get(id=session_id)
         except InterviewSession.DoesNotExist:
             return Response({"error": "Invalid session ID"}, status=404)
 
-        # 🧹 Delete old response for this session/question if it exists
+        # Remove any previous response
         InterviewResponse.objects.filter(
-            session=session,
-            question_number=question_number
+            session=session, question_number=question_number
         ).delete()
 
-        # 🎤 Create new response
+        # Save initial response
         response = InterviewResponse.objects.create(
             session=session,
             question_number=question_number,
             audio_file=audio_file,
         )
 
-        # 📝 Transcribe audio
-        elevenlabs_client = ElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
-        result = elevenlabs_client.speech_to_text.convert(model_id="scribe_v1", file=audio_file)
-        response.transcript = result.text
+        # Start background task for processing
+        def process_audio(response_id, question_number):
+            try:
+                resp = InterviewResponse.objects.get(id=response_id)
 
-        # 🤖 Analyze with OpenAI GPT-4o
-        openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        analysis_prompt = (
-            f"Analyze the following answer to question {question_number} "
-            f"in terms of communication skills, clarity, and confidence:\n\n{response.transcript}"
+                # Transcription
+                elevenlabs_client = ElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
+                result = elevenlabs_client.speech_to_text.convert(
+                    model_id="scribe_v1", file=resp.audio_file
+                )
+                resp.transcript = result.text
+
+                # OpenAI analysis
+                openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+                analysis_prompt = f"""
+                    Analyze the following interview response (Question {question_number}) and evaluate the candidate's performance across the following 5 skills:
+                    1. Communication
+                    2. Critical Thinking
+                    3. Confidence
+                    4. Adaptability
+                    5. Domain Knowledge
+
+                    Return a JSON object with:
+                    - A list of 'skills', each with:
+                        - 'name' (one of the 5 above),
+                        - 'score' (0–100),
+                        - 'comment' (short feedback)
+                    - An 'overall_summary' string that summarizes their overall performance on this answer.
+
+                    Transcript:
+                    \"\"\"{resp.transcript}\"\"\"
+                """
+
+                chat_response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an AI interview assistant.",
+                        },
+                        {"role": "user", "content": analysis_prompt},
+                    ],
+                )
+
+                # Clean content
+                raw_content = chat_response.choices[0].message.content.strip()
+                if raw_content.startswith("```json"):
+                    raw_content = raw_content.lstrip("```json").rstrip("```").strip()
+
+                parsed_json = json.loads(raw_content)
+                resp.analysis_result = parsed_json  # Can be stored as JSONField
+                resp.save()
+
+            except Exception as e:
+                logger.error(f"[UploadProcessor] Error: {e}")
+
+        threading.Thread(
+            target=process_audio, args=(response.id, question_number)
+        ).start()
+
+        # Return immediately
+        return Response(
+            {
+                "message": "Answer received. Processing in background.",
+                "response_id": response.id,
+            },
+            status=201,
         )
-
-        chat_response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are an AI interview assistant."},
-                {"role": "user", "content": analysis_prompt},
-            ]
-        )
-
-        response.analysis_result = chat_response.choices[0].message.content
-        response.save()
-
-        serializer = InterviewResponseSerializer(response)
-        return Response(serializer.data, status=201)
 
 
 class InterviewSessionResultView(APIView):
@@ -239,43 +295,60 @@ class InterviewSessionResultView(APIView):
         except InterviewSession.DoesNotExist:
             return Response({"error": "Session not found"}, status=404)
 
-        # Collect all individual responses
         responses = session.responses.order_by("question_number")
 
-        # Combine all analysis results into a single string
-        all_analysis = "\n\n".join([f"Q{r.question_number}: {r.analysis_result}" for r in responses if r.analysis_result])
+        # Combine all transcripts for a holistic evaluation
+        all_transcripts = "\n\n".join(
+            [f"Q{r.question_number}: {r.transcript}" for r in responses if r.transcript]
+        )
 
-        # Generate a summary using OpenAI
+        if not all_transcripts:
+            return Response(
+                {"error": "No transcripts found for this session."}, status=400
+            )
+
+        # OpenAI summary
         client = OpenAI(api_key=settings.OPENAI_API_KEY)
-
         prompt = f"""
-        The following is a set of individual analysis results from an AI interview. Please summarize the candidate’s overall communication skills, clarity, and confidence across all 10 answers:
+        You are an AI interview evaluator. Based on the following transcript of 10 answers,
+        provide an overall evaluation of the candidate.
 
-        {all_analysis}
+        Your output must be a JSON object with:
+        - A list of 5 'skills' (Communication, Critical Thinking, Confidence, Adaptability, Domain Knowledge)
+        - Each skill should have:
+            - 'name'
+            - 'score' (0–100)
+            - 'comment' (short feedback)
+        - A single 'overall_summary' that reflects their full performance
+
+        Transcript:
+        \"\"\"{all_transcripts}\"\"\"
         """
 
         chat_response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are an AI interview evaluator."},
                 {"role": "user", "content": prompt},
-            ]
+            ],
         )
 
-        summary = chat_response.choices[0].message.content
+        # Extract valid JSON from possibly triple-quoted code block
+        raw = chat_response.choices[0].message.content.strip()
+        if raw.startswith("```json"):
+            raw = raw.lstrip("```json").rstrip("```").strip()
 
-        return Response({
-            "session_id": session.id,
-            "user_id": session.user_id,
-            "summary": summary,
-            "responses": [
-                {
-                    "question_number": r.question_number,
-                    "transcript": r.transcript,
-                    "analysis_result": r.analysis_result,
-                    "audio_file": r.audio_file.url,
-                }
-                for r in responses
-            ]
-        })
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.error(f"OpenAI JSON parsing failed: {e}")
+            return Response({"error": "Failed to parse summary output."}, status=500)
 
+        return Response(
+            {
+                "session_id": session.id,
+                "user_id": session.user_id,
+                "summary": result.get("overall_summary"),
+                "skills": result.get("skills", []),
+            }
+        )

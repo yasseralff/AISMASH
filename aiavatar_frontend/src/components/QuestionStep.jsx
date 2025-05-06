@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import AudioRecorder from './AudioRecorder';
+import React, { useState } from "react";
+import AudioRecorder from "./AudioRecorder";
 
 export default function QuestionStep({ question, sessionId, onComplete }) {
   const [recordedBlob, setRecordedBlob] = useState(null);
@@ -7,13 +7,13 @@ export default function QuestionStep({ question, sessionId, onComplete }) {
 
   const handleUpload = async () => {
     const formData = new FormData();
-    formData.append('session_id', sessionId);
-    formData.append('question_number', question.id);
-    formData.append('audio', recordedBlob, `answer_q${question.id}.webm`);
+    formData.append("session_id", sessionId);
+    formData.append("question_number", question.id);
+    formData.append("audio", recordedBlob, `answer_q${question.id}.webm`);
 
     setIsUploading(true);
-    const res = await fetch('/api/interview/upload-response/', {
-      method: 'POST',
+    const res = await fetch("/api/interview/upload-response/", {
+      method: "POST",
       body: formData,
     });
 
@@ -28,12 +28,12 @@ export default function QuestionStep({ question, sessionId, onComplete }) {
         src={question.videoUrl}
         controls
         autoPlay
-        className="w-full max-w-xl rounded-lg shadow"
+        className="w-full max-w-4xl rounded-lg shadow"
       />
 
       <AudioRecorder onRecorded={(blob) => setRecordedBlob(blob)} />
 
-      <div className="flex gap-4 mt-4">
+      <div className="flex gap-4">
         <button
           onClick={handleUpload}
           disabled={!recordedBlob || isUploading}
